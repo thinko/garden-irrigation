@@ -1,6 +1,8 @@
 FROM registry.redhat.io/rhel10/rhel-bootc:latest
 
-ADD Current-IT-Root-CAs.pem /etc/pki/ca-trust/source/anchors/
+# Add your internal CA certificates (replace with your organization's certificates)
+# ADD your-internal-ca.pem /etc/pki/ca-trust/source/anchors/
+# RUN update-ca-trust
 
 RUN rm -rf /etc/rhsm-host
 # podman pull registry.access.redhat.com/ubi10/ubi:10.0-1747220028
@@ -8,10 +10,10 @@ RUN rm -rf /etc/rhsm-host
 # Clean any existing subscription data and register with activation key
 RUN subscription-manager clean || true
 
-# Register with Red Hat using activation key
+# Register with Red Hat using activation key (replace with your credentials)
 RUN subscription-manager register \
-    --activationkey=thinko-rhel10 \
-    --org=11009103 \
+    --activationkey=YOUR_ACTIVATION_KEY \
+    --org=YOUR_ORG_ID \
     --force || { \
         echo "Failed to register with activation key. Attempting auto-attach..."; \
         subscription-manager attach --auto; \
@@ -97,7 +99,6 @@ COPY config/ /etc/garden-tiller/
 COPY scripts/network_enumeration.py /opt/garden-tiller/scripts/
 COPY scripts/hardware_inventory.py /opt/garden-tiller/scripts/
 COPY scripts/firmware_updater.py /opt/garden-tiller/scripts/
-COPY scripts/lacp_test_runner.py /opt/garden-tiller/scripts/
 
 # Copy ansible playbooks and configurations
 COPY ansible/ /opt/garden-tiller/ansible/

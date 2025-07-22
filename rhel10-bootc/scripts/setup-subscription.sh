@@ -4,9 +4,9 @@
 
 set -euo pipefail
 
-# Configuration
-ACTIVATION_KEY="thinko-rhel10"
-ORG_ID="11009103"
+# Configuration - Replace these with your actual Red Hat credentials
+ACTIVATION_KEY="YOUR_ACTIVATION_KEY"
+ORG_ID="YOUR_ORG_ID"
 MAX_RETRIES=3
 RETRY_DELAY=10
 

@@ -40,6 +40,8 @@ A comprehensive, lightweight RHEL10 image-mode bootable Linux image designed for
 - SSH key pair (recommended)
 - 4GB+ available storage for image build
 
+> **⚠️ IMPORTANT**: Before building, you must configure your Red Hat credentials. The default files contain placeholder values that must be replaced with your actual subscription details. See the [Configuration Guide](../_dev_docs_/CONFIGURATION_GUIDE.md) for detailed setup instructions.
+
 ### Build the Image
 
 1. **Clone or download this project:**
