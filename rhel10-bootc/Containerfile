@@ -1,0 +1,119 @@
+FROM registry.redhat.io/rhel10/rhel-bootc:latest
+
+ADD Current-IT-Root-CAs.pem /etc/pki/ca-trust/source/anchors/
+
+RUN rm -rf /etc/rhsm-host
+# podman pull registry.access.redhat.com/ubi10/ubi:10.0-1747220028
+
+# Clean any existing subscription data and register with activation key
+RUN subscription-manager clean || true
+
+# Register with Red Hat using activation key
+RUN subscription-manager register \
+    --activationkey=thinko-rhel10 \
+    --org=11009103 \
+    --force || { \
+        echo "Failed to register with activation key. Attempting auto-attach..."; \
+        subscription-manager attach --auto; \
+    }
+
+# Enable required repositories with error handling
+RUN subscription-manager repos \
+    --disable '*' \
+    --enable rhel-10-for-x86_64-baseos-rpms \
+    --enable rhel-10-for-x86_64-appstream-rpms \
+    --enable rhel-10-for-x86_64-supplementary-rpms \
+    --enable codeready-builder-for-rhel-10-x86_64-rpms || { \
+        echo "Some repositories failed to enable. Checking available repos..."; \
+        subscription-manager repos --list-enabled; \
+    }
+
+# Update package cache and install packages
+RUN dnf makecache --refresh || { \
+        echo "Make cache failed, review the enabled repos:"; \
+        ls -la /etc/yum.repos.d/; \
+        grep -i -C4 codeready /etc/yum.repos.d/*; \
+        dnf update -y; \
+        dnf clean all; \
+    }
+
+RUN dnf install -y \
+    python3 python3-pip python3-setuptools python3-wheel python3-devel \
+    ansible-core git rsync \
+    openssh-clients openssh-server \
+    iproute ethtool iputils net-tools \
+    lldpd ipmitool \
+    tmux which iotop \
+    nmap tcpdump bind-utils wireshark-cli \
+    mdadm e2fsprogs xfsprogs exfatprogs \
+    procps-ng vim nano lshw fwupd pciutils usbutils \
+    lvm2 smartmontools nvme-cli dmidecode util-linux \
+    curl wget iperf3 nmstate open-vm-tools \
+    scapy mtr traceroute \
+    NetworkManager NetworkManager-config-server \
+    chrony linuxptp firewalld iptables-services \
+    gcc make automake autoconf \
+    kernel-devel kernel-headers \
+    tar gzip unzip jq bc nc socat parted
+
+RUN dnf clean all
+
+# Install Python dependencies
+COPY requirements.txt /tmp/
+RUN python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    python3 -m pip install --no-cache-dir --ignore-installed PyYAML && \
+    python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Install additional Python packages for hardware/network testing
+RUN python3 -m pip install --no-cache-dir \
+    speedtest-cli \
+    iperf3 \
+    python-nmap \
+    pyusb \
+    pynvml
+
+# Enable services
+RUN systemctl enable sshd.service lldpd.service chronyd.service NetworkManager.service
+
+# Create working directories
+RUN mkdir -p /opt/garden-tiller/{scripts,playbooks,inventories,reports,config} \
+    && mkdir -p /var/log/garden-tiller \
+    && mkdir -p /etc/garden-tiller
+
+# Create Ansible user with proper configuration
+RUN useradd -m -s /bin/bash ansible \
+    && echo "ansible ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/ansible \
+    && mkdir -p /home/ansible/.ssh \
+    && chmod 700 /home/ansible/.ssh \
+    && mkdir -p /home/ansible/.ansible \
+    && chown -R ansible:ansible /home/ansible \
+    && chown -R ansible:ansible /opt/garden-tiller
+
+# Copy garden-tiller components
+COPY garden-tiller/ /opt/garden-tiller/
+COPY config/ /etc/garden-tiller/
+
+# Create network test scripts based on garden-tiller
+COPY scripts/network_enumeration.py /opt/garden-tiller/scripts/
+COPY scripts/hardware_inventory.py /opt/garden-tiller/scripts/
+COPY scripts/firmware_updater.py /opt/garden-tiller/scripts/
+COPY scripts/lacp_test_runner.py /opt/garden-tiller/scripts/
+
+# Copy ansible playbooks and configurations
+COPY ansible/ /opt/garden-tiller/ansible/
+
+# Environment configuration
+ENV GARDEN_TILLER_HOME=/opt/garden-tiller
+ENV ANSIBLE_CONFIG=/opt/garden-tiller/ansible/ansible.cfg
+ENV PYTHONPATH=/opt/garden-tiller:$PYTHONPATH
+ENV PATH=/opt/garden-tiller/scripts:$PATH
+
+# Create startup script
+COPY scripts/startup.sh /usr/local/bin/startup.sh
+RUN chmod +x /usr/local/bin/startup.sh
+
+# Set appropriate permissions
+RUN chown -R ansible:ansible /opt/garden-tiller /etc/garden-tiller /var/log/garden-tiller \
+    && chmod +x /opt/garden-tiller/scripts/*.py
+
+ENTRYPOINT ["/usr/local/bin/startup.sh"]

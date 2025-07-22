@@ -1,0 +1,111 @@
+---
+- name: Network Interface Discovery and Testing
+  hosts: localhost
+  gather_facts: yes
+  become: yes
+
+  vars:
+    test_vlans: "{{ test_vlans | default([10, 20, 30]) }}"
+    lacp_modes: "{{ lacp_modes | default(['802.3ad', 'active-backup']) }}"
+
+  tasks:
+  - name: Gather network interface facts
+    setup:
+      filter: ansible_interfaces
+
+  - name: Get detailed interface information
+    shell: |
+      for iface in $(ls /sys/class/net/ | grep -v lo); do
+        echo "Interface: $iface"
+        echo "  State: $(cat /sys/class/net/$iface/operstate 2>/dev/null || echo unknown)"
+        echo "  MAC: $(cat /sys/class/net/$iface/address 2>/dev/null || echo unknown)"
+        if command -v ethtool >/dev/null 2>&1; then
+          echo "  Driver: $(ethtool -i $iface 2>/dev/null | grep driver | cut -d: -f2 | tr -d ' ' || echo unknown)"
+          echo "  Speed: $(ethtool $iface 2>/dev/null | grep Speed | cut -d: -f2 | tr -d ' ' || echo unknown)"
+        fi
+        echo ""
+      done
+    register: interface_details
+    changed_when: false
+
+  - name: Display interface information
+    debug:
+      var: interface_details.stdout_lines
+
+  - name: Test network connectivity
+    shell: |
+      echo "Testing connectivity..."
+      ping -c 3 8.8.8.8 >/dev/null 2>&1 && echo "Internet: OK" || echo "Internet: FAILED"
+      if [ -n "{{ controller_ip | default('') }}" ]; then
+        ping -c 3 {{ controller_ip }} >/dev/null 2>&1 && echo "Controller: OK" || echo "Controller: FAILED"
+      fi
+    register: connectivity_test
+    changed_when: false
+
+  - name: Display connectivity results
+    debug:
+      var: connectivity_test.stdout_lines
+
+  - name: Run hardware inventory script
+    script: /opt/garden-tiller/scripts/hardware_inventory.py --output /tmp/hardware-inventory.json
+    register: hardware_inventory
+    changed_when: false
+    ignore_errors: yes
+
+  - name: Run network enumeration script
+    script: /opt/garden-tiller/scripts/network_enumeration.py --output /tmp/network-enumeration.json
+    register: network_enumeration
+    changed_when: false
+    ignore_errors: yes
+    async: 300
+    poll: 0
+
+  - name: Run LACP test script (if enabled)
+    script: /opt/garden-tiller/scripts/lacp_test_runner.py --output /tmp/lacp-test-results.json
+    register: lacp_tests
+    changed_when: false
+    ignore_errors: yes
+    when: test_lacp | default(true)
+
+  - name: Create summary report
+    copy:
+      content: |
+        Garden-Tiller Network Validation Report
+        =====================================
+        Timestamp: {{ ansible_date_time.iso8601 }}
+        Hostname: {{ ansible_hostname }}
+
+        Interface Summary:
+        {{ interface_details.stdout }}
+
+        Connectivity Test:
+        {{ connectivity_test.stdout }}
+
+        Hardware Inventory: {{ 'Completed' if hardware_inventory.rc == 0 else 'Failed' }}
+        Network Enumeration: {{ 'Running' if network_enumeration.started else 'Failed' }}
+        LACP Tests: {{ 'Completed' if lacp_tests.rc == 0 else 'Skipped/Failed' }}
+
+        Detailed results available in:
+        - /tmp/hardware-inventory.json
+        - /tmp/network-enumeration.json
+        - /tmp/lacp-test-results.json
+      dest: /var/log/garden-tiller/validation-summary.txt
+
+  - name: Send results to controller (if configured)
+    uri:
+      url: "http://{{ controller_ip }}:{{ controller_port | default(8080) }}/api/validation-results"
+      method: POST
+      body_format: json
+      body:
+        hostname: "{{ ansible_hostname }}"
+        timestamp: "{{ ansible_date_time.iso8601 }}"
+        ip_addresses: "{{ ansible_all_ipv4_addresses }}"
+        interfaces: "{{ ansible_interfaces }}"
+        validation_status: "completed"
+      headers:
+        Content-Type: "application/json"
+    when:
+    - controller_ip is defined
+    - controller_ip != ""
+    - report_to_controller | default(true)
+    ignore_errors: yes

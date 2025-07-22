@@ -1,0 +1,135 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# VS Code
+.vscode/
+.history/
+
+# IDEs
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.*
+
+# Docker/Podman
+*.pid
+*.seed
+*.pid.lock
+
+# Helm/Kubernetes
+*.tgz
+
+# Container build artifacts
+output/
+*.qcow2
+*.iso
+
+# Dev docs and test folders
+_dev_docs_/
+_dev_test_/
+
+# Misc
+*.bak
+*.swp
+*.tmp
+*.orig
+*.rej
+
+# Ignore garden-tiller cache and logs
+/var/log/garden-tiller/
+
+# Additional container/build artifacts
+.buildah/
+.podman/
+*.tar.gz
+*.tar.xz
+*.rpm
+*.deb
+
+# Ansible artifacts
+*.retry
+.ansible/
+
+# Build caches and temporary directories
+.cache/
+tmp/
+temp/
+
+# SSH keys and secrets (just in case)
+*.pem
+*.key
+*.crt
+
+# System service files that might be generated
+*.service
+*.socket
+*.timer
