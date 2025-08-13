@@ -94,14 +94,14 @@ init_garden_tiller() {
     echo "Garden-Tiller environment initialized"
 }
 
-# Function to run hardware enumeration
+# Function to run hardware inventory
 run_hardware_enumeration() {
-    echo "Starting hardware enumeration..."
+    echo "Starting hardware inventory..."
     
     # Run as ansible user
     su - ansible -c "python3 /opt/garden-tiller/scripts/hardware_inventory.py --output /var/log/garden-tiller/hardware-inventory.json" || true
     
-    echo "Hardware enumeration completed"
+    echo "Hardware inventory completed"
 }
 
 # Function to start network enumeration

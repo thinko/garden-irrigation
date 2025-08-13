@@ -91,6 +91,26 @@ class NetworkTopology:
     dns_servers: List[str]
 
 @dataclass
+class PacketCapture:
+    """Packet capture information"""
+    interface: str
+    file_path: str
+    duration: int
+    file_size: int
+
+@dataclass
+class NmapScanResult:
+    """Nmap scan result"""
+    subnet: str
+    hosts: List[Dict[str, Any]]
+
+@dataclass
+class MTUDiscoveryResult:
+    """MTU discovery result"""
+    destination: str
+    mtu: int
+
+@dataclass
 class NetworkEnumeration:
     """Complete network enumeration results"""
     timestamp: str
@@ -100,17 +120,21 @@ class NetworkEnumeration:
     vlan_tests: List[VLANTest]
     connectivity_tests: List[ConnectivityTest]
     topology: NetworkTopology
+    packet_captures: List[PacketCapture]
+    nmap_scan_results: List[NmapScanResult]
+    mtu_discovery_results: List[MTUDiscoveryResult]
     configuration_recommendations: List[str]
 
 class NetworkEnumerator:
     """Network enumeration and testing class"""
     
-    def __init__(self, controller_ip: Optional[str] = None, test_vlans: Optional[List[int]] = None, test_subnets: Optional[List[str]] = None):
+    def __init__(self, controller_ip: Optional[str] = None, test_vlans: Optional[List[int]] = None, test_subnets: Optional[List[str]] = None, capture_duration: int = 60):
         self.logger = structlog.get_logger(self.__class__.__name__)
         self.controller_ip = controller_ip
         self.test_vlans = test_vlans or [10, 20, 30, 100, 200]
         self.test_subnets = test_subnets or ["10.9.1.0/24", "10.9.2.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"]
         self.bonding_modes = ["802.3ad", "active-backup", "balance-xor", "broadcast"]
+        self.capture_duration = capture_duration
         
     def run_command(self, cmd: List[str], ignore_errors: bool = True, timeout: int = 30) -> Optional[str]:
         """Run a system command and return output"""
@@ -454,7 +478,7 @@ class NetworkEnumerator:
                 )
             
             elif method == "https":
-                result = self.run_command(["curl", "-I", "-s", "-w", "%{http_code}", f"https://{target}", "--max-time", "10"], ignore_errors=False)
+                result = self.run_command(["curl", "-I", "-s", "-w", "%{{http_code}}", f"https://{target}", "--max-time", "10"], ignore_errors=False)
                 success = result is not None and ("200" in result or "301" in result or "302" in result)
                 
                 return ConnectivityTest(
@@ -555,6 +579,107 @@ class NetworkEnumerator:
             dns_servers=dns_servers
         )
     
+    def capture_traffic(self, interfaces: List[NetworkInterface]) -> List[PacketCapture]:
+        """Capture traffic on active interfaces"""
+        self.logger.info("Capturing network traffic")
+        captures = []
+        capture_dir = Path("/var/log/garden-tiller/captures")
+        capture_dir.mkdir(parents=True, exist_ok=True)
+
+        active_interfaces = [iface for iface in interfaces if iface.state == "UP"]
+
+        with ThreadPoolExecutor(max_workers=len(active_interfaces)) as executor:
+            futures = {
+                executor.submit(self._capture_traffic_on_interface, iface, capture_dir):
+                iface for iface in active_interfaces
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    captures.append(result)
+        
+        return captures
+
+    def _capture_traffic_on_interface(self, interface: NetworkInterface, capture_dir: Path) -> Optional[PacketCapture]:
+        """Capture traffic on a single interface"""
+        capture_file = capture_dir / f"{interface.name}_{int(time.time())}.pcap"
+        self.logger.info("Starting traffic capture", interface=interface.name, file=str(capture_file), duration=self.capture_duration)
+
+        try:
+            cmd = [
+                "tcpdump",
+                "-i", interface.name,
+                "-w", str(capture_file),
+                "-G", str(self.capture_duration),
+                "-W", "1"
+            ]
+            self.run_command(cmd, timeout=self.capture_duration + 5)
+
+            file_size = capture_file.stat().st_size
+            self.logger.info("Traffic capture finished", interface=interface.name, file_size=file_size)
+
+            return PacketCapture(
+                interface=interface.name,
+                file_path=str(capture_file),
+                duration=self.capture_duration,
+                file_size=file_size
+            )
+        except Exception as e:
+            self.logger.error("Traffic capture failed", interface=interface.name, error=str(e))
+            return None
+
+    def scan_subnets(self, subnets: List[str]) -> List[NmapScanResult]:
+        """Scan discovered subnets with nmap"""
+        self.logger.info("Scanning subnets with nmap")
+        scan_results = []
+
+        for subnet in subnets:
+            self.logger.info("Scanning subnet", subnet=subnet)
+            try:
+                import nmap
+                nm = nmap.PortScanner()
+                nm.scan(hosts=subnet, arguments='-sP')
+                hosts = []
+                for host in nm.all_hosts():
+                    hosts.append({
+                        "host": host,
+                        "status": nm[host].state(),
+                    })
+                scan_results.append(NmapScanResult(subnet=subnet, hosts=hosts))
+            except ImportError:
+                self.logger.error("python-nmap is not installed, skipping nmap scan")
+                break
+            except Exception as e:
+                self.logger.error("Nmap scan failed", subnet=subnet, error=str(e))
+
+        return scan_results
+
+    def discover_mtu(self, destination: str) -> MTUDiscoveryResult:
+        """Discover the MTU to a destination using ping"""
+        self.logger.info("Discovering MTU", destination=destination)
+        low = 0
+        high = 9000
+        max_mtu = 0
+
+        while low <= high:
+            mid = (low + high) // 2
+            # The -s option for ping is the packet size, not including the 28-byte ICMP header
+            packet_size = mid - 28
+            if packet_size < 0:
+                low = mid + 1
+                continue
+
+            cmd = ["ping", "-c", "1", "-M", "do", "-s", str(packet_size), destination]
+            result = self.run_command(cmd)
+
+            if result and "1 received" in result:
+                max_mtu = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        return MTUDiscoveryResult(destination=destination, mtu=max_mtu)
+
     def generate_recommendations(self, interfaces: List[NetworkInterface], bonding_tests: List[BondingTest], 
                                vlan_tests: List[VLANTest], connectivity_tests: List[ConnectivityTest]) -> List[str]:
         """Generate configuration recommendations"""
@@ -605,6 +730,20 @@ class NetworkEnumerator:
         
         # Discover topology
         topology = self.discover_network_topology()
+
+        # Capture traffic
+        packet_captures = self.capture_traffic(interfaces)
+
+        # Scan subnets
+        nmap_scan_results = self.scan_subnets(topology.subnets_discovered)
+
+        # Discover MTU
+        mtu_discovery_results = []
+        if topology.gateways:
+            mtu_discovery_results.append(self.discover_mtu(topology.gateways[0]))
+        else:
+            # If no gateway, try a public address
+            mtu_discovery_results.append(self.discover_mtu("8.8.8.8"))
         
         # Generate recommendations
         recommendations = self.generate_recommendations(interfaces, bonding_tests, vlan_tests, connectivity_tests)
@@ -617,6 +756,9 @@ class NetworkEnumerator:
             vlan_tests=vlan_tests,
             connectivity_tests=connectivity_tests,
             topology=topology,
+            packet_captures=packet_captures,
+            nmap_scan_results=nmap_scan_results,
+            mtu_discovery_results=mtu_discovery_results,
             configuration_recommendations=recommendations
         )
         
@@ -627,6 +769,7 @@ class NetworkEnumerator:
                         connectivity_tests=len(connectivity_tests))
         
         return enumeration
+
 
 def main():
     """Main function"""

@@ -31,13 +31,25 @@ RUN subscription-manager repos \
     }
 
 # Update package cache and install packages
-RUN dnf makecache --refresh || { \
-        echo "Make cache failed, review the enabled repos:"; \
-        ls -la /etc/yum.repos.d/; \
-        grep -i -C4 codeready /etc/yum.repos.d/*; \
-        dnf update -y; \
-        dnf clean all; \
+RUN dnf makecache --refresh || { 
+        echo "Make cache failed, review the enabled repos:"; 
+        ls -la /etc/yum.repos.d/; 
+        grep -i -C4 codeready /etc/yum.repos.d/*; 
+        dnf update -y; 
+        dnf clean all; 
     }
+
+RUN echo "[hpe-mcp]
+name=HPE Management Component Pack
+baseurl=http://downloads.linux.hpe.com/repo/mcp/rhel/10/x86_64/current/
+enabled=1
+gpgcheck=0" > /etc/yum.repos.d/hpe-mcp.repo
+
+RUN echo "[hpe-sdr]
+name=HPE Software Delivery Repository
+baseurl=http://downloads.linux.hpe.com/repo/sdr/rhel/10/x86_64/current/
+enabled=1
+gpgcheck=0" > /etc/yum.repos.d/hpe-sdr.repo
 
 RUN dnf install -y \
     python3 python3-pip python3-setuptools python3-wheel python3-devel \
@@ -56,7 +68,9 @@ RUN dnf install -y \
     chrony linuxptp firewalld iptables-services \
     gcc make automake autoconf \
     kernel-devel kernel-headers \
-    tar gzip unzip jq bc nc socat parted
+    tar gzip unzip jq bc nc socat parted \
+    ssacli ilorest
+
 
 RUN dnf clean all
 
@@ -72,7 +86,10 @@ RUN python3 -m pip install --no-cache-dir \
     iperf3 \
     python-nmap \
     pyusb \
-    pynvml
+    pynvml \
+    pysftp \
+    tftpy \
+    qrcode
 
 # Enable services
 RUN systemctl enable sshd.service lldpd.service chronyd.service NetworkManager.service
@@ -99,6 +116,9 @@ COPY config/ /etc/garden-tiller/
 COPY scripts/network_enumeration.py /opt/garden-tiller/scripts/
 COPY scripts/hardware_inventory.py /opt/garden-tiller/scripts/
 COPY scripts/firmware_updater.py /opt/garden-tiller/scripts/
+COPY scripts/clean_boot_lacp_orchestrator.py /opt/garden-tiller/scripts/
+COPY scripts/lacp_validation_test.py /opt/garden-tiller/scripts/
+COPY scripts/run_clean_boot_lacp.sh /opt/garden-tiller/scripts/
 
 # Copy ansible playbooks and configurations
 COPY ansible/ /opt/garden-tiller/ansible/

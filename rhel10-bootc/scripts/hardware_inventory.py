@@ -96,6 +96,43 @@ class PCIDevice:
     driver: Optional[str]
 
 @dataclass
+class RAIDController:
+    """RAID controller information"""
+    model: str
+    firmware_version: str
+    serial_number: str
+    slot: str
+
+@dataclass
+class LogicalDrive:
+    """RAID logical drive information"""
+    size: str
+    raid_level: str
+    status: str
+    caching: str
+
+@dataclass
+class PhysicalDrive:
+    """RAID physical drive information"""
+    model: str
+    size: str
+    status: str
+    firmware_state: str
+
+@dataclass
+class RAIDInfo:
+    """RAID information"""
+    controllers: List[RAIDController]
+    logical_drives: List[LogicalDrive]
+    physical_drives: List[PhysicalDrive]
+
+@dataclass
+class BIOSSetting:
+    """BIOS setting information"""
+    name: str
+    value: str
+
+@dataclass
 class BMCInfo:
     """BMC/IPMI information"""
     present: bool
@@ -114,8 +151,10 @@ class HardwareInventory:
     storage: List[StorageDevice]
     network: List[NetworkInterface]
     pci_devices: List[PCIDevice]
+    raid: RAIDInfo
     bmc: BMCInfo
-    firmware: Dict[str, Any]
+    bios_settings: List[BIOSSetting]
+    dmidecode_info: Dict[str, Any]
 
 class HardwareEnumerator:
     """Hardware enumeration class"""
@@ -420,6 +459,107 @@ class HardwareEnumerator:
         
         return devices
     
+    def get_raid_info(self) -> RAIDInfo:
+        """Get RAID information using ssacli"""
+        controllers = []
+        logical_drives = []
+        physical_drives = []
+
+        # Check for ssacli
+        ssacli_path = self.run_command(["which", "ssacli"])
+        if not ssacli_path:
+            return RAIDInfo(controllers, logical_drives, physical_drives)
+
+        # Get controller info
+        controller_output = self.run_command(["ssacli", "ctrl", "all", "show", "detail"])
+        if controller_output:
+            current_controller = {}
+            for line in controller_output.split('\n'):
+                line = line.strip()
+                if line.startswith("Smart Array"):
+                    if current_controller:
+                        controllers.append(RAIDController(**current_controller))
+                    current_controller = {"model": line.split(" in Slot ")[0].strip(), "slot": line.split(" in Slot ")[1].strip()}
+                elif line.startswith("Firmware Version:"):
+                    current_controller["firmware_version"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Serial Number:"):
+                    current_controller["serial_number"] = line.split(":", 1)[1].strip()
+            if current_controller:
+                controllers.append(RAIDController(**current_controller))
+
+        # Get logical drive info
+        ld_output = self.run_command(["ssacli", "ctrl", "all", "ld", "all", "show", "detail"])
+        if ld_output:
+            current_ld = {}
+            for line in ld_output.split('\n'):
+                line = line.strip()
+                if line.startswith("Array:"):
+                    if current_ld:
+                        logical_drives.append(LogicalDrive(**current_ld))
+                    current_ld = {}
+                elif line.startswith("Size:"):
+                    current_ld["size"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Fault Tolerance:"):
+                    current_ld["raid_level"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Status:"):
+                    current_ld["status"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Caching:"):
+                    current_ld["caching"] = line.split(":", 1)[1].strip()
+            if current_ld:
+                logical_drives.append(LogicalDrive(**current_ld))
+
+        # Get physical drive info
+        pd_output = self.run_command(["ssacli", "ctrl", "all", "pd", "all", "show", "detail"])
+        if pd_output:
+            current_pd = {}
+            for line in pd_output.split('\n'):
+                line = line.strip()
+                if line.startswith("physicaldrive"):
+                    if current_pd:
+                        physical_drives.append(PhysicalDrive(**current_pd))
+                    current_pd = {}
+                elif line.startswith("Model:"):
+                    current_pd["model"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Size:"):
+                    current_pd["size"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Status:"):
+                    current_pd["status"] = line.split(":", 1)[1].strip()
+                elif line.startswith("Firmware State:"):
+                    current_pd["firmware_state"] = line.split(":", 1)[1].strip()
+            if current_pd:
+                physical_drives.append(PhysicalDrive(**current_pd))
+
+        return RAIDInfo(controllers, logical_drives, physical_drives)
+
+    def get_bios_settings(self) -> List[BIOSSetting]:
+        """Get BIOS settings using ilorest"""
+        settings = []
+        ilorest_path = self.run_command(["which", "ilorest"])
+        if not ilorest_path:
+            return settings
+
+        # Save BIOS settings to a temporary file
+        temp_file = "/tmp/bios_settings.json"
+        save_command = ["ilorest", "save", "--select", "Bios.", "-f", temp_file]
+        save_result = self.run_command(save_command)
+        if not save_result or "error" in save_result.lower():
+            self.logger.error("Failed to save BIOS settings", error=save_result)
+            return settings
+
+        # Read and parse the settings from the file
+        try:
+            with open(temp_file, "r") as f:
+                bios_data = json.load(f)
+            
+            if "default" in bios_data:
+                for key, value in bios_data["default"].items():
+                    settings.append(BIOSSetting(name=key, value=str(value)))
+
+        except (IOError, json.JSONDecodeError) as e:
+            self.logger.error("Failed to read or parse BIOS settings file", error=str(e))
+        
+        return settings
+
     def get_bmc_info(self) -> BMCInfo:
         """Get BMC/IPMI information"""
         present = False
@@ -456,33 +596,46 @@ class HardwareEnumerator:
             mac_address=mac_address
         )
     
-    def get_firmware_info(self) -> Dict[str, Any]:
-        """Get firmware information"""
-        firmware = {}
+    def get_dmidecode_info(self) -> Dict[str, Any]:
+        """Get dmidecode information for various components"""
+        dmidecode_info = {}
+        dmidecode_types = {
+            "bios": "bios",
+            "system": "system",
+            "baseboard": "baseboard",
+            "chassis": "chassis",
+            "processor": "processor",
+            "memory": "memory",
+            "cache": "cache",
+            "connector": "connector",
+            "slot": "slot"
+        }
+
+        for name, dtype in dmidecode_types.items():
+            output = self.run_command(["dmidecode", "-t", dtype])
+            if output:
+                dmidecode_info[name] = self._parse_dmidecode_output(output)
         
-        # BIOS/UEFI information from dmidecode
-        dmidecode_output = self.run_command(["dmidecode", "-t", "bios"])
-        if dmidecode_output:
-            bios_info = {}
-            for line in dmidecode_output.split('\n'):
-                line = line.strip()
-                if ':' in line and not line.startswith('Handle'):
-                    key, value = line.split(':', 1)
-                    bios_info[key.strip()] = value.strip()
-            firmware['bios'] = bios_info
+        return dmidecode_info
+
+    def _parse_dmidecode_output(self, output: str) -> List[Dict[str, Any]]:
+        """Parse the output of dmidecode into a list of records"""
+        records = []
+        current_record = None
+
+        for line in output.split('\n'):
+            if line.startswith("Handle"):
+                if current_record is not None:
+                    records.append(current_record)
+                current_record = {}
+            elif '\t' in line and ':' in line:
+                key, value = line.strip().split(':', 1)
+                current_record[key.strip()] = value.strip()
         
-        # System information
-        system_output = self.run_command(["dmidecode", "-t", "system"])
-        if system_output:
-            system_info = {}
-            for line in system_output.split('\n'):
-                line = line.strip()
-                if ':' in line and not line.startswith('Handle'):
-                    key, value = line.split(':', 1)
-                    system_info[key.strip()] = value.strip()
-            firmware['system'] = system_info
-        
-        return firmware
+        if current_device is not None:
+            records.append(current_record)
+
+        return records
     
     def _parse_size(self, size_str: str) -> int:
         """Parse size string to bytes"""
@@ -526,8 +679,10 @@ class HardwareEnumerator:
         storage = self.get_storage_info()
         network = self.get_network_interfaces()
         pci_devices = self.get_pci_devices()
+        raid = self.get_raid_info()
         bmc = self.get_bmc_info()
-        firmware = self.get_firmware_info()
+        bios_settings = self.get_bios_settings()
+        dmidecode_info = self.get_dmidecode_info()
         
         inventory = HardwareInventory(
             timestamp=timestamp,
@@ -537,8 +692,10 @@ class HardwareEnumerator:
             storage=storage,
             network=network,
             pci_devices=pci_devices,
+            raid=raid,
             bmc=bmc,
-            firmware=firmware
+            bios_settings=bios_settings,
+            dmidecode_info=dmidecode_info
         )
         
         self.logger.info("Hardware enumeration completed", 
@@ -547,6 +704,9 @@ class HardwareEnumerator:
                         pci_devices=len(pci_devices))
         
         return inventory
+
+
+
 
 def main():
     """Main function"""
